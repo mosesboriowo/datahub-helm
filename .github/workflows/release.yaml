@@ -1,44 +1,63 @@
-name: Release Charts
+name: Deploy DataHub on EKS with PostgreSQL
 
 on:
   push:
     branches:
       - master
-    paths-ignore:
-      - '**.md'
-      - 'LICENSE'
-      - 'NOTICE'
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: kubernetes-worker
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-
-      - name: Fetch history
-        run: git fetch --prune --unshallow
-
-      - name: Configure Git
-        run: |
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+      - name: Set up environment
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+       
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name ${{ secrets.EKS_NAME }}   
+      
       - name: Install Helm
-        uses: azure/setup-helm@v1
-        with:
-          version: v3.4.0
+        run: npm install -g helm
 
-      - name: Add Helm repos
+      - name: Install DataHub prerequisites
+        run: helm install prerequisites datahub/datahub-prerequisites
+
+      - name: Install PostgreSQL database driver
+        run: helm install postgresql-driver ./postgresql-driver/
+
+      - name: Install DataHub
+        run: helm install datahub datahub/datahub --values values.yaml
+
+      - name: Wait for DataHub to be ready
         run: |
-          helm repo add elasticsearch https://helm.elastic.co
-          helm repo add neo4j https://helm.neo4j.com/neo4j
-          helm repo add mysql https://charts.bitnami.com/bitnami
-          helm repo add cp-helm-charts https://confluentinc.github.io/cp-helm-charts
-          helm repo add kafka https://charts.bitnami.com/bitnami
-          
-      - name: Run chart-releaser
-        uses: helm/chart-releaser-action@v1.2.1
-        with:
-          charts_repo_url: https://helm.datahubproject.io
-        env:
-          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          until kubectl get statefulset datahub-gms -n datahub --output jsonpath='{.status.readyReplicas}' | grep -q '1'; do
+            sleep 5
+          done
+
+      - name: Enable ingress
+        run: |
+          kubectl patch deployment datahub -n datahub --type json -p '[{"spec":{"template":{"spec":{"containers":[{"name":"datahub-frontend","ports":[{"containerPort":9002}]}]}}}]'
+
+      - name: Get DataHub frontend pod name
+        run: kubectl get pods -n datahub --selector app=datahub-frontend -o jsonpath='{.items[0].metadata.name}' | tee > datahub-frontend-pod-name
+
+      - name: Port forward to DataHub frontend
+        run: kubectl port-forward $(cat datahub-frontend-pod-name) 9002:9002 -n datahub
+
+      - name: Wait for DataHub frontend to be accessible
+        run: |
+          until curl --fail http://localhost:9002; do
+            sleep 5
+          done
+
+      - name: Success
+        run: echo "DataHub is deployed and accessible at http://localhost:9002"
