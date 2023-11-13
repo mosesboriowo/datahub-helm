@@ -159,7 +159,7 @@ kafkaSetupJob:
     #   imagePullPolicy: Always
 
 mysqlSetupJob:
-  enabled: true
+  enabled: false
   image:
     repository: acryldata/datahub-mysql-setup
     # tag: "v0.11.0" # defaults to .global.datahub.version
@@ -194,7 +194,7 @@ mysqlSetupJob:
     #   imagePullPolicy: Always
 
 postgresqlSetupJob:
-  enabled: false
+  enabled: true
   image:
     repository: acryldata/datahub-postgres-setup
     # tag: "v0.11.0" # defaults to .global.datahub.version
